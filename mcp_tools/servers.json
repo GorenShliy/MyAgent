@@ -1,0 +1,19 @@
+{
+  "servers": [
+    {
+      "name": "builtin_tools",
+      "type": "stdio",
+      "enabled": true,
+      "command": "python",
+      "args": ["mcp_tools/embedded_server.py"],
+      "description": "内置工具：本地文件读取 / HTTP 接口请求（路径白名单）"
+    },
+    {
+      "name": "example_sse",
+      "type": "sse",
+      "enabled": false,
+      "url": "https://example.com/mcp/sse",
+      "description": "外部远程 MCP Server 示例：启用前请改为真实地址，并设置 enabled 为 true"
+    }
+  ]
+}
