@@ -484,6 +484,12 @@ streamlit>=1.37.0
 - 根因：并行工具调用基于同一份文件旧快照写回，后写覆盖先写
 - 规避：对同一文件的修改改为逐个 Edit 串行提交，或改用 Write 全量重写后再验证
 
+**7.（操作记录）git 初始化与 GitHub 发布准备**
+- 交付 `.gitignore`（排除 `config.py`/`.venv/`/`data/`/`.trae/`/`.idea/`/`__pycache__/` 等）与 `config.example.py`（无密钥模板，供拉取者复制为 `config.py`）
+- README 新增「发布到 GitHub」章节（上传/不上传清单、提交前检查、拉取者快速上手）
+- 已 `git init` 并完成首次提交（commit `2e432e4`，30 个文件，2800 行），工作区干净；**尚未 push**（待用户在 GitHub 建远程仓库后 push）
+- 注意：后续改动配置项时，需同步维护 `config.example.py` 与 README 配置表
+
 ---
 
 ## 九、继续维护约定
