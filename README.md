@@ -123,6 +123,8 @@ pip install -r requirements.txt
 > Windows 常见问题：若安装或启动 chromadb 时提示 SQLite 版本过旧（需要 3.35+），可降级安装：
 > `pip install chromadb==0.4.24`
 
+> ⚠️ **重要**：本项目依赖只安装在虚拟环境 `.venv` 内。**每次新开终端运行前，都必须先激活虚拟环境**（执行 `.venv\Scripts\activate`），或把下文所有命令中的 `python` 替换为 `.venv\Scripts\python.exe`。否则会报 `ModuleNotFoundError`（如 `No module named 'openai'`）。
+
 ## 配置说明（config.py）
 
 | 配置项 | 说明 |
@@ -181,7 +183,12 @@ pip install -r requirements.txt
 
 ## 启动方式
 
+> 以下命令均假设**已激活虚拟环境**（`.`venv\Scripts\activate`）。若未激活，请把每条命令中的 `python` 替换为 `.venv\Scripts\python.exe`。
+
 ```bash
+# 0.（必做）激活虚拟环境
+.venv\Scripts\activate
+
 # 1.（每次对话前先上传文档，可多次重复）
 python main.py upload data/documents/我的文档.md data/documents/手册.pdf
 
@@ -204,7 +211,9 @@ python main.py sessions
 ### 启动 Web 界面
 
 ```bash
+.venv\Scripts\activate
 streamlit run web/app.py
+# 未激活虚拟环境时：.venv\Scripts\python.exe -m streamlit run web/app.py
 ```
 
 浏览器自动打开后：左侧管理会话与知识库（上传 / 删除文档、查看工具列表），主区域对话；Agent 每次调用的工具（知识库检索 / MCP 工具）会以"工具调用轨迹"折叠面板展示。会话与向量库同样持久化到 `data/`，与 CLI 完全共用。

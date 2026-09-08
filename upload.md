@@ -490,6 +490,14 @@ streamlit>=1.37.0
 - 已 `git init` 并完成首次提交（commit `2e432e4`，30 个文件，2800 行），工作区干净；**尚未 push**（待用户在 GitHub 建远程仓库后 push）
 - 注意：后续改动配置项时，需同步维护 `config.example.py` 与 README 配置表
 
+**8.（已修复）用系统 Python 启动报 `ModuleNotFoundError: No module named 'openai'`**
+- 现象：在项目目录执行 `python main.py chat` 报缺 openai（后续任何依赖都会同样报错）
+- 根因：依赖只装在项目虚拟环境 `.venv` 内；用户当前 shell 用的是系统 Python（未激活虚拟环境）
+- 修复（使用层面）：
+  - 启动前先执行 `.venv\Scripts\activate`（推荐），或所有命令用 `.venv\Scripts\python.exe main.py ...` / `.venv\Scripts\python.exe -m streamlit run web/app.py` 代替；
+  - `README.md`「安装步骤」新增激活提醒、「启动方式」与「启动 Web 界面」统一补充激活步骤
+- 经验：任何使用入口（CLI / Web / 上传）都必须经由虚拟环境的 Python 启动
+
 ---
 
 ## 九、继续维护约定
