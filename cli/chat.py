@@ -62,6 +62,24 @@ async def run_chat(agent: Agent, session_id: int, memory: Memory):
         if text == "/sessions":
             _cmd_sessions(memory)
             continue
+        if text.startswith("/delete-session"):
+            parts = text.split()
+            if len(parts) < 2:
+                print("用法：/delete-session <会话ID>（ID 见 /sessions 输出）")
+                continue
+            try:
+                target = int(parts[1])
+            except ValueError:
+                print("会话 ID 必须是数字。")
+                continue
+            deleted = memory.delete_session(target)
+            if deleted is None:
+                print(f"未找到会话 #{target}")
+            else:
+                print(f"已删除会话 #{target}（含 {deleted} 条消息）")
+                if target == session_id:
+                    print("提示：当前会话已被删除，输入 /new 开启新会话")
+            continue
         if text.startswith("/upload"):
             await _cmd_upload(agent, text)
             continue

@@ -91,6 +91,15 @@ with st.sidebar:
     st.session_state.session_id = ids[chosen]
     session_id = st.session_state.session_id
 
+    # 删除当前所选会话（删除后自动切换到最近会话或新建）
+    if st.button("🗑️ 删除所选会话", use_container_width=True):
+        memory.delete_session(session_id)
+        remain = memory.list_sessions()
+        st.session_state.session_id = (
+            remain[0]["id"] if remain else memory.create_session()
+        )
+        st.rerun()
+
     st.divider()
     st.header("📚 知识库管理")
 

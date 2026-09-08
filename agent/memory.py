@@ -119,3 +119,22 @@ class Memory:
                     trace = None
             result.append({"role": r["role"], "content": r["content"], "trace": trace})
         return result
+
+    # ---------------- 删除 ----------------
+    def delete_session(self, session_id: int) -> int | None:
+        """删除指定会话及其全部消息。
+
+        :return: 删除的消息条数；会话不存在时返回 None。
+        """
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute(
+                "SELECT id FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            cur = conn.execute(
+                "DELETE FROM messages WHERE session_id = ?", (session_id,)
+            )
+            deleted_msgs = cur.rowcount
+            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            return deleted_msgs

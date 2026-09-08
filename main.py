@@ -80,6 +80,16 @@ def cmd_sessions(args):
         print(f"  ID={r['id']}  {r['title']}  ({r['created_at']})")
 
 
+def cmd_delete_session(args):
+    """删除指定历史会话（含其全部消息）。"""
+    memory = Memory()
+    deleted = memory.delete_session(args.id)
+    if deleted is None:
+        print(f"未找到会话 ID={args.id}")
+    else:
+        print(f"已删除会话 #{args.id}（含 {deleted} 条消息）")
+
+
 def cmd_chat(args):
     """进入对话交互；指定 --session 可恢复该会话的历史。"""
 
@@ -121,6 +131,10 @@ def main():
 
     p_ses = sub.add_parser("sessions", help="查看历史会话")
     p_ses.set_defaults(handler=cmd_sessions)
+
+    p_delses = sub.add_parser("delete-session", help="删除历史会话（含其全部消息）")
+    p_delses.add_argument("id", type=int, help="会话 ID（见 sessions 输出）")
+    p_delses.set_defaults(handler=cmd_delete_session)
 
     p_chat = sub.add_parser("chat", help="进入对话交互")
     p_chat.add_argument("--session", type=int, default=None, help="恢复指定会话 ID 的历史")
