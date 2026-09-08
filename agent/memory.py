@@ -67,6 +67,13 @@ class Memory:
                 "SELECT id, title, created_at FROM sessions ORDER BY id DESC"
             ).fetchall()
 
+    def rename_session(self, session_id: int, title: str) -> None:
+        """更新会话标题（用于首轮对话后的自动命名）。"""
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "UPDATE sessions SET title = ? WHERE id = ?", (title, session_id)
+            )
+
     # ---------------- 消息 ----------------
     def save_message(
         self, session_id: int, role: str, content: str, trace: str | None = None

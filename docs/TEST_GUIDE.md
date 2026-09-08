@@ -118,8 +118,8 @@ python main.py documents   # 这次应为空
 
 ```
   - knowledge_search（知识库检索，Agent 内部工具）
-  - builtin_tools::file_read（MCP 外部工具）
-  - builtin_tools::http_request（MCP 外部工具）
+  - builtin_tools_file_read（MCP 外部工具）
+  - builtin_tools_http_request（MCP 外部工具）
 ```
 
 如果列表为空，请查看日志中是否有 `MCP Server [builtin_tools] 启动失败`，参考文末"常见问题"。
@@ -131,7 +131,7 @@ python main.py documents   # 这次应为空
 ```
 
 **预期行为**：
-- 日志出现 `⟦工具⟧ builtin_tools::file_read ...`；
+- 日志出现 `⟦工具⟧ builtin_tools_file_read ...`；
 - 回答会包含该文件的实际内容摘要。
 
 **测试路径穿越防护**（安全验证）：
@@ -150,7 +150,7 @@ python main.py documents   # 这次应为空
 ```
 
 **预期行为**：
-- 日志出现 `⟦工具⟧ builtin_tools::http_request ...`；
+- 日志出现 `⟦工具⟧ builtin_tools_http_request ...`；
 - 回答包含 `"User-Agent": ...` 等 JSON 字段。
 
 带参数的请求示例（可尝试）：

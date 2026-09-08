@@ -45,6 +45,8 @@ class Agent:
         :param on_tool: 可选回调 on_tool(name, args, result)，每次工具执行后触发，
                         供界面层展示调用轨迹；不传则无任何额外行为（CLI 不受影响）。
         """
+        # 首轮判定：保存用户消息前该会话尚无历史（用于会话自动命名）
+        is_first = not self.memory.load_history(session_id, max_turns=1)
         self.memory.save_message(session_id, "user", user_input)
 
         history = self.memory.load_history(session_id, config.MAX_HISTORY_TURNS)
@@ -70,6 +72,7 @@ class Agent:
                     answer,
                     trace=json.dumps(traces, ensure_ascii=False) if traces else None,
                 )
+                await self._maybe_auto_title(session_id, user_input, is_first)
                 return answer
 
             # 记录 assistant 的工具调用请求，随后逐个执行并回填
@@ -110,6 +113,7 @@ class Agent:
                     {"role": "tool", "tool_call_id": tc.id, "content": tool_result}
                 )
 
+        await self._maybe_auto_title(session_id, user_input, is_first)
         return "已达到最大迭代轮数仍未得到结论，请尝试把问题表述得更具体一些。"
 
     # ---------------- 工具调度 ----------------
@@ -160,3 +164,26 @@ class Agent:
         if not result["found"]:
             return result["note"]  # 含【知识库信息不足】标记
         return self.rag.format_result(result)
+
+    # ---------------- 会话自动命名 ----------------
+    _TITLE_PROMPT = (
+        "请为下面的用户提问生成一个简短的会话标题（中文，不超过 12 个字，"
+        "概括问题主题即可）。只输出标题本身，不要引号，不要任何多余说明。\n"
+        "用户提问："
+    )
+
+    async def _maybe_auto_title(self, session_id: int, question: str, is_first: bool):
+        """首轮对话结束后用 LLM 生成会话标题并写入数据库；失败时保持默认标题。"""
+        if not is_first:
+            return
+        try:
+            msg = await self.llm.chat(
+                [{"role": "user", "content": self._TITLE_PROMPT + question}]
+            )
+            title = (msg.content or "").strip().strip('"\'“”‘’')
+            if not title or len(title) > 32:
+                title = "新会话"
+        except Exception:
+            logger.debug("会话自动命名失败（保持默认标题）", exc_info=True)
+            return
+        self.memory.rename_session(session_id, title)

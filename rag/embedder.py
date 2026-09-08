@@ -6,21 +6,37 @@ Embedding 封装：按 config.EMBEDDING_PROVIDER 选择实现：
 对上层统一暴露 async 的 embed_texts / embed_query，RAGService 无需感知后端差异。
 """
 import asyncio
+import os
 
 import config
+from utils.logger import get_logger
+
+logger = get_logger("rag.embedder")
 
 # 单次 encode 的最大文本条数（本地与 API 共用，防内存 / 请求体过大）
 _BATCH_SIZE = 64
 
 
 def _new_local_model():
-    """构建本地 SentenceTransformer 模型（首次运行自动下载权重）。"""
+    """构建本地 SentenceTransformer 模型。
+
+    优先以 local_files_only 离线加载：模型已缓存时完全跳过 huggingface 联网
+    校验，避免无外网/网络差环境下每次启动都卡在 HEAD 请求重试（可长达 1~2 分钟）。
+    仅当缓存缺失（首次运行）时回退为联网下载。
+    """
     from sentence_transformers import SentenceTransformer
 
     kwargs = {}
     if config.EMBEDDING_CACHE_DIR:
         kwargs["cache_folder"] = config.EMBEDDING_CACHE_DIR
-    return SentenceTransformer(config.EMBEDDING_MODEL, **kwargs)
+    try:
+        return SentenceTransformer(
+            config.EMBEDDING_MODEL, local_files_only=True, **kwargs
+        )
+    except Exception:
+        # 缓存不存在：首次运行，允许联网下载模型
+        logger.info("本地模型缓存未找到，尝试联网下载 %s ...", config.EMBEDDING_MODEL)
+        return SentenceTransformer(config.EMBEDDING_MODEL, **kwargs)
 
 
 class LocalEmbedder:

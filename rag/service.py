@@ -13,6 +13,9 @@ from rag.reranker import build_reranker
 from rag.splitter import split_text
 from rag.types import RetrievedChunk
 from rag.vectorstore import VectorStore
+from utils.logger import get_logger
+
+logger = get_logger("rag.service")
 
 
 class RAGService:
@@ -36,6 +39,11 @@ class RAGService:
             raise ValueError("文档内容为空，无法入库")
 
         source = self._copy_to_documents(file_path)  # 归集后的文件名，同时作为删除依据
+        # 去重：同名文档重新入库前，先删除该 source 的旧分块（覆盖式更新，避免重复块）
+        removed = self.store.delete_by_source(source)
+        if removed:
+            logger.info("检测到同名文档《%s》，已删除旧分块 %d 条后重新入库", source, removed)
+
         ids, metadatas = [], []
         for i, chunk in enumerate(chunks):
             ids.append(f"{source}::{i}::{uuid.uuid4().hex[:8]}")
@@ -46,20 +54,14 @@ class RAGService:
         return len(chunks)
 
     def _copy_to_documents(self, src_path: str) -> str:
-        """把上传的原始文档归集到 DOCUMENTS_DIR（重名自动加序号），返回目标文件名。"""
+        """把上传的原始文档归集到 DOCUMENTS_DIR（同名直接覆盖，保持 source 一致以便去重），返回目标文件名。"""
         os.makedirs(config.DOCUMENTS_DIR, exist_ok=True)
         src = os.path.abspath(src_path)
         base = os.path.basename(src)
         dst = os.path.join(config.DOCUMENTS_DIR, base)
-        if os.path.abspath(dst) == src:  # 文件已在归集目录内，无需复制
-            return base
-        if os.path.exists(dst):  # 重名：追加 _1/_2...
-            name, ext = os.path.splitext(base)
-            i = 1
-            while os.path.exists(dst := os.path.join(config.DOCUMENTS_DIR, f"{name}_{i}{ext}")):
-                i += 1
-        shutil.copy2(src, dst)
-        return os.path.basename(dst)
+        if os.path.abspath(dst) != src:  # 文件已在归集目录内则跳过
+            shutil.copy2(src, dst)  # 同名覆盖
+        return base
 
     def list_sources(self) -> dict[str, int]:
         """返回 {源文档名: 分块数}。"""

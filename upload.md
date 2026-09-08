@@ -428,15 +428,15 @@ streamlit>=1.37.0
 
 3. 配置 `config.py` 的 `LLM_API_KEY` 后手测完整链路：
    - 上传文档 → 主区域提问 → 回答含来源，"工具调用轨迹"面板显示 `knowledge_search` 调用；
-   - 问知识库外问题 → 观察 Agent 降级调用 `builtin_tools::file_read` / `http_request`；
+   - 问知识库外问题 → 观察 Agent 降级调用 `builtin_tools_file_read` / `builtin_tools_http_request`；
    - ➕ 新建会话 → 切换历史会话 → 消息与轨迹回放正常；
    - 删除文档 → 列表即时更新；
    - 重启 Streamlit → 会话、向量库、MCP 连接均正常恢复。
 
 ## 七、已知边界（本次不改，留作后续）
 
-- 同名文件重复上传仍会产生双份分块（内容 hash 去重待做）；
-- 会话标题仍为默认"新会话"，未做首轮提问自动命名；
+- ~~同名文件重复上传仍会产生双份分块（内容 hash 去重待做）~~ → 已实现（见条目 12：上传同名文档自动覆盖旧分块）
+- ~~会话标题仍为默认"新会话"，未做首轮提问自动命名~~ → 已实现（见条目 12：首轮对话后 LLM 自动生成标题）
 - 工具结果在轨迹中截断为前 500 字符（避免消息表膨胀）。
 
 ---
@@ -515,6 +515,52 @@ streamlit>=1.37.0
   - 选择变化时 `st.session_state.session_id = chosen; st.rerun()` 一次点击立即切换主区；
   - 「新建会话」「删除会话」后 `st.session_state.pop("session_selector", None)` 重置下拉，避免旧选中项残留
 - 验证：AppTest 模拟切换下拉 → 一次 run 即切到目标会话、无异常
+
+**11.（已修复）文档与配置同步修正（用户反馈三项）**
+- 1）`requirements.txt`：`sentence-transformers` 取消注释，从可选依赖移入正式依赖——默认 `EMBEDDING_PROVIDER=local` 后本地向量化已是必选能力（原注释误标为"Rerank 时才需要"）；`tiktoken` 仍保留可选
+- 2）`docs/TEST_GUIDE.md`：工具名 `builtin_tools::file_read` / `builtin_tools::http_request` 改为下划线形式 `builtin_tools_file_read` / `builtin_tools_http_request`（与工具改名后的实际行为一致）
+- 3）`README.md` 目录结构：`mcp/` → `mcp_tools/`，补充 `config.example.py`、`upload.md`；`utils/` 已在树中保留；另同步修正「添加外部 MCP Server」节的 `server名_工具名` 前缀说明，以及 `upload.md` 验证章节的工具名
+- 说明：`upload.md` 问题日志第 4 条中保留 `builtin_tools::` 字样——那是当时 bug 的根因描述，属历史记录
+
+**12.（新增功能）会话自动命名、上传去重、start.bat 启动脚本**
+- 需求：1）首轮对话后 LLM 自动生成会话标题；2）上传同名文档前删除旧分块；3）Windows 一键启动脚本
+- 实现：
+  - 会话自动命名：`agent/memory.py` 新增 `rename_session()`；`agent/core.py` 在 `ask()` 首轮判定（保存用户消息前会话无历史）后调用 `_maybe_auto_title()`，用 LLM 按用户提问生成 ≤12 字标题（失败回退"新会话"），正常作答与迭代超限两个出口均触发；
+  - 上传去重：`rag/service.py` 的 `upload()` 在入库前先 `delete_by_source(source)` 删除同名旧分块；`_copy_to_documents()` 由"重名加序号"改为"同名覆盖"，保证 source 文件名一致从而命中去重；
+  - `start.bat`（新文件）：`chcp 65001` + `cd /d %~dp0`，自动用 `.venv` 内 Python 启动 CLI，缺虚拟环境时给出初始化提示
+- 验证（HF_HUB_OFFLINE=1 离线加载本地模型）：
+  - 同一文档连续 upload 两次 → 知识库统计仅 `{'测试知识库.md': 1}`，去重生效；
+  - 新建会话 → 首轮提问"帮我查一下会议室怎么预订" → 标题自动变为"会议室预订方法"；
+  - `start.bat` 为批处理脚本，双击运行（待用户在桌面验证）
+- 备注：验证过程中发现首次模型加载会做 huggingface 联网校验较慢，属正常现象（已缓存后每次加载仍有少量 HEAD 请求）；未改动 embedding 加载逻辑
+
+**13.（已修复）start.bat 双击乱码报错；本地模型加载被联网校验拖慢**
+- 现象 1：双击 `start.bat` 弹 cmd 报一堆 `'xist' 不是内部或外部命令`、`'all' 不是内部或外部命令` 及乱码命令
+- 根因 1：批处理文件最初以 UTF-8 写入，cmd 按系统 GBK 代码页逐字节解析 → 中文行乱码、`if/echo` 结构被拆散；改为 GBK 编码后仍乱（与控制台代码页有关）
+- 修复 1：`start.bat` 重写为**纯 ASCII + CRLF**（0 个非 ASCII 字节，提示语用英文），任何代码页下稳定；已在本机 cmd 实测可进入 Python 启动流程
+- 现象 2：启动 chat / upload 卡 1~2 分钟，日志显示 `huggingface.co ... HEAD ... [WinError 10060] 连接尝试失败` 反复重试
+- 根因 2：`SentenceTransformer` 每次加载模型都会联网校验缓存元数据，网络差/无外网时 HEAD 重试（最多 5 次）拖慢启动
+- 修复 2（`rag/embedder.py`）：`_new_local_model()` 加载时临时置 `HF_HUB_OFFLINE=1` 强制离线（缓存命中即秒级跳过联网），仅缓存缺失（首次下载）时恢复联网；实测模型加载 55s → 稳定 ~19s（剩余为 torch/模型冷启动固有开销，非网络问题）
+- 经验：批处理文件避免用中文内容（编码坑多），或确保按目标机器代码页保存；本地模型环境应默认离线加载
+
+**14.（新增功能）支持用户手动修改会话名称**
+- 需求：用户提出"要允许用户手动修改会话名称"
+- 实现：
+  - `agent/memory.py`：新增 `get_session_title()`（配合已有 `rename_session()`）；
+  - `agent/core.py`：`_maybe_auto_title()` 增加保护——仅当当前标题为默认"新会话"时才自动命名，**用户手动重命名过的标题不会被自动命名覆盖**；
+  - Web（`web/app.py`）：会话管理区新增「会话新名称」输入框 +「✏️ 重命名当前会话」按钮；
+  - CLI（`cli/chat.py`）：新增 `/rename <新名称>`（重命名当前会话）
+- 验证：
+  - 手动改标题"我的自定义标题"后经历首轮对话（自动命名逻辑触发）→ 标题保持自定义，未被覆盖；
+  - 未命名会话首轮提问"帮我查一下报销流程" → 自动生成"报销流程查询"；
+  - Web AppTest 渲染含「✏️ 重命名当前会话」按钮与输入框，无异常
+- 交互规则：自动命名只在首轮且标题仍为默认值时生效；手动重命名任何时候都优先
+
+**15.（已修复，随后随功能回退）重命名会话后下拉框名称不刷新** ⚠️ 随条目 14 一并回退
+- 现象：手动重命名当前会话后，侧边栏下拉框仍显示旧名称，需刷新页面才更新
+- 根因：`st.selectbox` 的 options 值是会话 ID（重命名前后 ID 不变），Streamlit 对相同 options 复用旧标签，不重算 format_func 输出
+- 修复（`web/app.py`）：重命名成功分支追加 `st.session_state.pop("session_selector", None)` 再 `st.rerun()`——与新建/删除会话同款处理，强制下拉按新标题重建，立即显示新名称
+- 验证：AppTest 交互链无异常；真实视觉效果待用户在浏览器确认
 
 ---
 

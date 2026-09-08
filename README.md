@@ -64,10 +64,13 @@ flowchart LR
 
 ```
 MyAgent/
-├── config.py                    # 全局配置：LLM / Embedding / RAG / MCP / SQLite（密钥统一在此）
+├── config.py                    # 全局配置：LLM / Embedding / RAG / MCP / SQLite（本地密钥，已被 .gitignore 排除）
+├── config.example.py            # 配置模板（无密钥，供拉取者复制为 config.py）
 ├── requirements.txt             # 依赖清单
 ├── README.md
+├── upload.md                    # 问题记录与修复日志
 ├── main.py                      # CLI 入口
+├── start.bat                    # Windows 一键启动（自动用 .venv 启动 CLI）
 ├── docs/
 │   └── TEST_GUIDE.md            # 功能测试文档（RAG / MCP / 记忆测试教程）
 ├── data/                        # 运行时自动创建
@@ -81,12 +84,12 @@ MyAgent/
 ├── rag/
 │   ├── loader.py                # 文档加载（PDF/txt/md）
 │   ├── splitter.py              # 递归字符切分 + 重叠窗口
-│   ├── embedder.py              # OpenAI text-embedding 封装
+│   ├── embedder.py              # Embedding 双后端：本地模型（默认）/ OpenAI 接口
 │   ├── vectorstore.py           # ChromaDB 入库 / 检索 / 删除
 │   ├── reranker.py              # Rerank 预留接口（默认关闭）
 │   ├── types.py                 # 共享数据结构
 │   └── service.py               # RAGService 文档管理与检索
-├── mcp/
+├── mcp_tools/
 │   ├── servers.json             # MCP Server 注册表（可增删）
 │   ├── embedded_server.py       # 内置 stdio Server（file_read / http_request）
 │   └── client.py                # MCPManager 多 Server 连接与工具转发
@@ -179,9 +182,11 @@ pip install -r requirements.txt
 
 - `type: stdio`：本地子进程启动（`command` + `args`）
 - `type: sse`：远程 HTTP 服务（`url`）
-- 工具名会自动带上 `server名::` 前缀防止重名冲突
+- 工具名会自动带上 `server名_工具名` 前缀（下划线连接）防止重名冲突
 
 ## 启动方式
+
+> **Windows 用户**：可直接双击项目根目录的 `start.bat` 一键启动 CLI（自动使用 `.venv`，无需手动激活；未装虚拟环境时会提示初始化步骤）。
 
 > 以下命令均假设**已激活虚拟环境**（`.`venv\Scripts\activate`）。若未激活，请把每条命令中的 `python` 替换为 `.venv\Scripts\python.exe`。
 

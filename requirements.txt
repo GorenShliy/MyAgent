@@ -15,6 +15,9 @@ langchain-text-splitters>=0.3.0
 # 注意：锁定 <2 —— mcp 2.x 已将 FastMCP 改名为 MCPServer 且 API 大改，本项目按 1.x 编写
 mcp>=1.2.0,<2
 
+# 本地 Embedding 后端（EMBEDDING_PROVIDER=local，默认）：文档向量化用
+sentence-transformers>=3.0.0
+
 # HTTP 工具底层请求库
 httpx>=0.27.0
 
@@ -22,5 +25,4 @@ httpx>=0.27.0
 streamlit>=1.37.0
 
 # ---- 以下为可选依赖，按需启用 ----
-# sentence-transformers>=3.0.0   # 本地模型重排（开启 Rerank 时安装）
 # tiktoken>=0.7.0                # 将文本切分改为按 token 切分时安装（见 rag/splitter.py 注释）
