@@ -507,6 +507,15 @@ streamlit>=1.37.0
 - 验证：CLI 删除（返回消息数 2 → 列表移除 → 再次删除返回 None）、`main.py --help` 包含子命令、Web AppTest 渲染无异常（无 EXC/ERROR）
 - 边界：按用户选择仅实现"删除单个会话"；"删除单条消息""清空全部历史"暂不实现
 
+**10.（已修复）Web 端切换会话"第一次切换不成功"**
+- 现象：切换对话下拉框时，第一次点击经常回弹/不生效，需要再点一次
+- 根因：`st.selectbox` 未设置 `key`，且用 `index` 反推选中项；Streamlit 无 key 时用 index 与用户选择做一致性比较，值不同步时首次点击会被回弹到旧值
+- 修复（`web/app.py`）：
+  - 下拉框加 `key="session_selector"`，改为受控组件，自身状态驱动，切换立即生效；
+  - 选择变化时 `st.session_state.session_id = chosen; st.rerun()` 一次点击立即切换主区；
+  - 「新建会话」「删除会话」后 `st.session_state.pop("session_selector", None)` 重置下拉，避免旧选中项残留
+- 验证：AppTest 模拟切换下拉 → 一次 run 即切到目标会话、无异常
+
 ---
 
 ## 九、继续维护约定

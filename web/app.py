@@ -76,19 +76,26 @@ with st.sidebar:
 
     if st.button("➕ 新建会话", use_container_width=True):
         st.session_state.session_id = memory.create_session()
+        st.session_state.pop("session_selector", None)  # 重置下拉，使新会话立即成为选中项
         st.rerun()
 
     sessions = memory.list_sessions()  # 新建后重取，保证列表包含当前会话
     ids = [r["id"] for r in sessions]
-    labels = [f"#{r['id']} · {r['title']} · {r['created_at']}" for r in sessions]
+    name_of = {
+        r["id"]: f"#{r['id']} · {r['title']} · {r['created_at']}" for r in sessions
+    }
     chosen = st.selectbox(
         "历史会话",
-        range(len(labels)),
+        ids,
         index=ids.index(st.session_state.session_id),
-        format_func=lambda i: labels[i],
+        format_func=lambda _id: name_of[_id],
         label_visibility="collapsed",
+        key="session_selector",  # 带 key 的下拉由自身状态驱动，切换立即生效
     )
-    st.session_state.session_id = ids[chosen]
+    if chosen != st.session_state.session_id:
+        # 用户在列表切换会话：立即生效并重渲染主区（避免首次切换不生效）
+        st.session_state.session_id = chosen
+        st.rerun()
     session_id = st.session_state.session_id
 
     # 删除当前所选会话（删除后自动切换到最近会话或新建）
@@ -98,6 +105,7 @@ with st.sidebar:
         st.session_state.session_id = (
             remain[0]["id"] if remain else memory.create_session()
         )
+        st.session_state.pop("session_selector", None)  # 下拉需按删除后的会话重建
         st.rerun()
 
     st.divider()
