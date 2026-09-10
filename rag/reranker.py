@@ -1,58 +1,76 @@
 """
-结果重排序（Rerank）预留接口 —— 【默认关闭】
-=============================================
-现阶段仅依靠"向量相似度检索"（TOP_K 个候选），本模块提供统一的重排扩展点。
-开启方式（config.py）：
-    RERANK_ENABLED = True，并填写 RERANK_API_KEY / RERANK_BASE_URL。
+结果重排序（Rerank）：本地 CrossEncoder 精排
+============================================
+默认开启（config.RERANK_ENABLED = True），使用 sentence-transformers 的
+CrossEncoder（模型 BAAI/bge-reranker-base）对向量召回的候选块做二次打分，
+按相关性降序返回。模型首次运行自动下载，之后离线可用（与 embedder.py 同策略）。
 
-接入真实远程 Rerank API 后，在 HttpReranker.rerank 中把 (query, hits) 发给
-服务的 rerank 接口，按返回分数对 hits 重排并更新 score 字段即可；
-也可以改为加载本地模型（sentence-transformers 的 cross-encoder，
-pip install sentence-transformers）。
+重排器统一接口为 async rerank(query, hits)，推理在后台线程执行避免阻塞事件循环。
+若模型加载失败，自动降级为 IdentityReranker（不改顺序）。
 """
-import logging
+import asyncio
+import math
 
 import config
 from rag.types import RetrievedChunk
+from utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("rag.reranker")
 
 
 class BaseReranker:
     """重排器抽象接口。"""
 
-    def rerank(self, query: str, hits: list[RetrievedChunk]) -> list[RetrievedChunk]:
+    async def rerank(self, query: str, hits: list[RetrievedChunk]) -> list[RetrievedChunk]:
         """输入查询与候选块，返回重排后的候选块。"""
         raise NotImplementedError
 
 
 class IdentityReranker(BaseReranker):
-    """默认实现：不改变候选顺序（即纯向量检索结果）。"""
+    """降级实现：不改变候选顺序（即纯向量检索结果）。"""
 
-    def rerank(self, query: str, hits: list[RetrievedChunk]) -> list[RetrievedChunk]:
+    async def rerank(self, query: str, hits: list[RetrievedChunk]) -> list[RetrievedChunk]:
         return hits
 
 
-class HttpReranker(BaseReranker):
-    """远程 Rerank API 实现骨架（预留，含配置参数）。"""
+class LocalCrossEncoderReranker(BaseReranker):
+    """本地 CrossEncoder 重排：用 (query, chunk) 对打分，sigmoid 归一化到 0~1。"""
 
     def __init__(self):
-        self.base_url = config.RERANK_BASE_URL or config.LLM_BASE_URL
-        self.api_key = config.RERANK_API_KEY
-        self.model = config.RERANK_MODEL
+        self._model = self._load_model()
 
-    def rerank(self, query: str, hits: list[RetrievedChunk]) -> list[RetrievedChunk]:
-        # TODO(接入指引)：调用远程 rerank 接口（如 Cohere / Jina / 各厂商兼容端点），
-        #   请求体一般形如 {"model": ..., "query": query, "documents": [文本列表]}，
-        #   拿到每个文档的 relevance score 后按下表重排 hits 并更新 score：
-        #   hits[i].score = response 中的对应分数
-        #   return sorted(hits, key=lambda h: h.score, reverse=True)
-        logger.warning("Rerank API 尚未接入，当前返回原顺序。")
-        return hits
+    @staticmethod
+    def _load_model():
+        """离线优先加载 CrossEncoder：缓存命中则完全跳过联网校验。"""
+        from sentence_transformers import CrossEncoder
+
+        try:
+            return CrossEncoder(config.RERANK_MODEL, local_files_only=True)
+        except Exception:
+            logger.info("重排模型缓存未找到，尝试联网下载 %s ...", config.RERANK_MODEL)
+            return CrossEncoder(config.RERANK_MODEL)
+
+    def _predict(self, pairs: list[list[str]]) -> list[float]:
+        return self._model.predict(pairs)
+
+    async def rerank(self, query: str, hits: list[RetrievedChunk]) -> list[RetrievedChunk]:
+        if not hits:
+            return hits
+        pairs = [[query, h.text] for h in hits]
+        # CPU 推理放后台线程，避免阻塞事件循环
+        scores = await asyncio.to_thread(self._predict, pairs)
+        for h, s in zip(hits, scores):
+            # CrossEncoder 输出为 logits，经 sigmoid 映射到 (0, 1)，与相似度阈值口径一致
+            h.score = round(1.0 / (1.0 + math.exp(-float(s))), 4)
+        return sorted(hits, key=lambda h: h.score, reverse=True)
 
 
 def build_reranker() -> BaseReranker:
-    """按配置构建重排器：未启用或缺少 API Key 时使用默认（不改顺序）。"""
-    if config.RERANK_ENABLED and config.RERANK_API_KEY:
-        return HttpReranker()
-    return IdentityReranker()
+    """按配置构建重排器：未启用或模型加载失败时降级为 IdentityReranker。"""
+    if not config.RERANK_ENABLED:
+        return IdentityReranker()
+    try:
+        return LocalCrossEncoderReranker()
+    except Exception as e:
+        logger.warning("本地 CrossEncoder 加载失败（%s），降级为不重排", e)
+        return IdentityReranker()

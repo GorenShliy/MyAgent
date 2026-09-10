@@ -41,10 +41,10 @@ def get_runtime():
     """构建事件循环桥 + MCP 连接 + Agent 等常驻对象。"""
     bridge = AsyncBridge()
     memory = Memory()
-    rag = RAGService()
+    llm = LLMClient()  # 未配置 API Key 时抛 ValueError，由调用方给出友好提示
+    rag = RAGService(llm=llm)  # 注入 LLM 以支持查询改写
     mcp = MCPManager()
     bridge.run(mcp.start())  # 单个 Server 失败仅告警，不阻断（与 CLI 行为一致）
-    llm = LLMClient()  # 未配置 API Key 时抛 ValueError，由调用方给出友好提示
     agent = Agent(rag=rag, mcp=mcp, memory=memory, llm=llm)
     return bridge, agent, rag, memory, mcp
 

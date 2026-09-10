@@ -83,14 +83,15 @@ TOP_K = 5
 # 当没有任何块达到阈值时，RAG 返回"知识库信息不足"，提示 Agent 转向外部工具。
 RAG_SIM_THRESHOLD = 0.30
 
-# ---- Rerank 重排序（预留，默认关闭）----
-# 现阶段仅依靠向量相似度检索；如需开启重排：
-#   1. RERANK_ENABLED = True
-#   2. 配置 RERANK_API_KEY / RERANK_BASE_URL（预留的远程重排接口，见 rag/reranker.py）
-RERANK_ENABLED = False
+# ---- Rerank 重排序（默认开启，本地 CrossEncoder）----
+# 使用 sentence-transformers 的 CrossEncoder（模型 BAAI/bge-reranker-base）对
+# 向量召回的候选块做二次精排；模型首次运行自动下载，之后离线可用。
+RERANK_ENABLED = True
 RERANK_MODEL = "BAAI/bge-reranker-base"
-RERANK_API_KEY = ""
-RERANK_BASE_URL = ""
+
+# ---- 查询改写（默认开启）----
+# 检索前用 LLM 把用户问题改写为 2-3 个检索关键词，分别召回后合并去重，提升召回率。
+QUERY_REWRITE_ENABLED = True
 
 # ==========================================================
 # 四、对话记忆（SQLite）配置

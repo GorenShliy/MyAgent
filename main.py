@@ -98,8 +98,9 @@ def cmd_chat(args):
         session_id = args.session or memory.create_session()
         mcp = MCPManager()
         await mcp.start()  # 单个 Server 启动失败不影响继续
-        rag = RAGService()
-        agent = Agent(rag=rag, mcp=mcp, memory=memory, llm=LLMClient())
+        llm = LLMClient()
+        rag = RAGService(llm=llm)  # 注入 LLM 以支持查询改写
+        agent = Agent(rag=rag, mcp=mcp, memory=memory, llm=llm)
         try:
             await run_chat(agent, session_id, memory)
         finally:

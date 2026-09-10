@@ -21,7 +21,12 @@ logger = get_logger("rag.service")
 class RAGService:
     """知识库核心业务：文档管理与检索。"""
 
-    def __init__(self):
+    def __init__(self, llm=None):
+        """
+        :param llm: 可选的 LLM 客户端（agent.llm.LLMClient），用于查询改写。
+                    对话场景必须注入；纯文档管理（upload/documents/delete）无需注入。
+        """
+        self.llm = llm
         self.embedder = Embedder()
         self.store = VectorStore()
         self.reranker = build_reranker()  # 默认 Identity（未启用重排）
@@ -76,19 +81,34 @@ class RAGService:
         """
         检索知识库并做相似度阈值过滤。
 
+        流程：查询改写（可选）→ 多路向量检索 → 合并去重 → CrossEncoder 重排 → 阈值过滤。
+
         :return: {
             "found": bool,                   # 是否有达标结果
             "note": str,                     # 给 LLM 的说明（含"知识库信息不足"标记）
-            "chunks": [RetrievedChunk, ...], # 达标块，已按相似度降序
+            "chunks": [RetrievedChunk, ...], # 达标块，已按重排分数降序
         }
         """
         top_k = top_k or config.TOP_K
         if self.store.count() == 0:
             return {"found": False, "note": "知识库为空：请先使用 upload 命令上传文档。", "chunks": []}
 
-        hits = await self._retrieve_candidates(query, top_k)
+        # 1) 查询改写：把原问题拆成 2-3 个检索关键词，多路召回提升覆盖率
+        queries = [query]
+        if config.QUERY_REWRITE_ENABLED and self.llm is not None:
+            variants = await self._rewrite_query(query)
+            if variants:
+                queries.extend(variants)
+                logger.debug("查询改写：%s → %s", query, variants)
 
-        # 过滤低于相似度阈值的块 —— 没有任何块达标时视为"知识库信息不足"
+        # 2) 多路检索 + 合并去重（同一块取最高向量相似度分数）
+        all_hits = await self._retrieve_multi(queries, top_k)
+
+        # 3) CrossEncoder 重排（用原始用户问题打分，最能反映真实意图）
+        reranked = await self.reranker.rerank(query, all_hits)
+        hits = sorted(reranked, key=lambda h: h.score, reverse=True)
+
+        # 4) 过滤低于相似度阈值的块 —— 没有任何块达标时视为"知识库信息不足"
         qualified = [h for h in hits if h.score >= config.RAG_SIM_THRESHOLD]
         if not qualified:
             return {
@@ -101,15 +121,45 @@ class RAGService:
             }
         return {"found": True, "note": f"知识库命中 {len(qualified)} 条相关文档块", "chunks": qualified}
 
-    async def _retrieve_candidates(self, query: str, top_k: int) -> list[RetrievedChunk]:
-        """召回候选块：向量检索 → 可选 Rerank → 按相似度降序。"""
+    async def _rewrite_query(self, query: str) -> list[str]:
+        """用 LLM 把用户问题改写为 2-3 个检索关键词，失败时返回空列表（回退原问题）。"""
+        prompt = (
+            "请把下面的用户问题改写为 2-3 个用于知识库检索的关键词或短语，"
+            "每个关键词占一行。只输出关键词本身，不要编号、不要引号、不要任何解释。\n"
+            f"用户问题：{query}"
+        )
+        try:
+            msg = await self.llm.chat([{"role": "user", "content": prompt}])
+            text = (msg.content or "").strip()
+            seen, variants = set(), []
+            for line in text.splitlines():
+                v = line.strip().strip('"，,。.、；;')
+                if v and v not in seen and v != query:
+                    seen.add(v)
+                    variants.append(v)
+            return variants[:3]
+        except Exception:
+            logger.debug("查询改写失败，使用原问题", exc_info=True)
+            return []
+
+    async def _retrieve_multi(self, queries: list[str], top_k: int) -> list[RetrievedChunk]:
+        """对多个查询分别做向量检索，按块文本合并去重（保留最高分）。"""
+        merged: dict[str, RetrievedChunk] = {}
+        for q in queries:
+            for hit in await self._vector_search(q, top_k):
+                if hit.text not in merged or hit.score > merged[hit.text].score:
+                    merged[hit.text] = hit
+        return list(merged.values())
+
+    async def _vector_search(self, query: str, top_k: int) -> list[RetrievedChunk]:
+        """单次向量检索，返回带相似度分数的候选块（不做重排）。"""
         query_embedding = await self.embedder.embed_query(query)
         resp = self.store.query(query_embedding, top_k)
 
         docs = resp["documents"][0]
         metas = resp["metadatas"][0]
         dists = resp["distances"][0]  # cosine 距离，越小越相似
-        hits = [
+        return [
             RetrievedChunk(
                 text=docs[i],
                 score=round(1.0 - dists[i], 4),  # 相似度 = 1 - 距离
@@ -117,8 +167,6 @@ class RAGService:
             )
             for i in range(len(docs))
         ]
-        reranked = self.reranker.rerank(query, hits)  # 预留重排扩展点
-        return sorted(reranked, key=lambda h: h.score, reverse=True)
 
     def format_result(self, result: dict) -> str:
         """把检索结果组装成给 LLM 的上下文文本。"""
