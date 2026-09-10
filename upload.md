@@ -562,6 +562,68 @@ streamlit>=1.37.0
 - 修复（`web/app.py`）：重命名成功分支追加 `st.session_state.pop("session_selector", None)` 再 `st.rerun()`——与新建/删除会话同款处理，强制下拉按新标题重建，立即显示新名称
 - 验证：AppTest 交互链无异常；真实视觉效果待用户在浏览器确认
 
+**16.（已修复）四项稳定性与安全修复**
+- 1）`agent/core.py` — LLM 调用失败 / 达到最大迭代轮数时助手回复未入库，导致历史记录断裂
+  - 根因：`ask()` 中 `except Exception` 分支和循环结束后的 `return` 直接返回文本，未调用 `save_message`
+  - 修复：两个出口在 `return` 前先 `self.memory.save_message(session_id, "assistant", ...)` 并触发 `_maybe_auto_title`，与正常作答路径保持一致
+- 2）`mcp_tools/embedded_server.py` — `file_read` 缺少敏感文件黑名单，可能泄露 API Key
+  - 根因：仅做了目录白名单校验，未拦截白名单内的敏感文件（如 `config.py`、`.env`、`*.key`）
+  - 修复：新增 `_SENSITIVE_FILENAMES`（`config.py`/`.env`/`credentials.json` 等）与 `_SENSITIVE_SUFFIXES`（`.key`/`.pem`/`.p12`/`.crt`/`.jks` 等），`_is_sensitive()` 大小写不敏感匹配；`file_read` 在读取前拦截并返回拒绝提示
+- 3）`agent/memory.py` — SQLite 并发写入偶发 `database is locked`
+  - 根因：`sqlite3.connect` 默认 `timeout=5.0` 且 journal_mode 为 `delete`，多连接写时锁等待不足
+  - 修复：`_connect()` 改为 `sqlite3.connect(self.db_path, timeout=10)` 并执行 `PRAGMA journal_mode=WAL`，允许并发读、缩短写锁持有时间
+- 4）`agent/core.py` — 自动命名长度校验阈值与 prompt 不一致
+  - 根因：`_TITLE_PROMPT` 要求"不超过 12 个字"，但 `_maybe_auto_title` 用 `len(title) > 32` 做截断
+  - 修复：改为 `len(title) > 12`，与 prompt 约束一致
+- 验证：临时脚本 `_verify_fixes.py`（已删除）用 mock LLM 分别验证——LLM 异常消息入库、最大迭代消息入库、`config.py`/`*.key` 被 `file_read` 拒绝、`journal_mode=wal`、13 字标题回退"新会话"而 11 字标题被采用，全部通过
+
+**17.（新增功能）RAG 模块增强：本地 CrossEncoder 重排 + 查询改写多路召回**
+- 需求：1）用本地 CrossEncoder（BAAI/bge-reranker-base）替换空 HttpReranker 骨架，默认开启重排；2）检索前用 LLM 把问题改写为 2-3 个关键词，多路检索后合并去重提升召回率；3）config 增加开关
+- 实现：
+  - `rag/reranker.py`：重写为 `LocalCrossEncoderReranker`，复用 embedder.py 的离线优先加载策略（`local_files_only=True`，缓存缺失回退联网下载）；`rerank()` 改为 async，推理放 `asyncio.to_thread` 避免阻塞事件循环；CrossEncoder 输出的 logits 经 sigmoid 归一化到 (0,1)，与 `RAG_SIM_THRESHOLD` 口径一致；模型加载失败自动降级 `IdentityReranker`
+  - `rag/service.py`：`RAGService.__init__(llm=None)` 新增可选 LLM 注入；`retrieve()` 流程改为「查询改写 → 多路向量检索 → 按文本合并去重（保留最高分）→ CrossEncoder 重排（用原始问题打分）→ 阈值过滤」；新增 `_rewrite_query()`（LLM 生成 2-3 关键词，逐行解析、清洗标点引号、异常回退空列表）、`_retrieve_multi()`、`_vector_search()`（原 `_retrieve_candidates` 拆分）
+  - `config.py` / `config.example.py`：`RERANK_ENABLED` 默认 `True`；移除 `RERANK_API_KEY`/`RERANK_BASE_URL`（不再需要远程接口）；新增 `QUERY_REWRITE_ENABLED = True`
+  - `main.py` `cmd_chat` / `web/app.py` `get_runtime`：创建 `LLMClient` 后注入 `RAGService(llm=llm)`，使查询改写在对话场景生效（纯文档管理命令不注入 LLM，自动回退单路检索）
+- 验证（临时脚本 `_verify_rag.py`，已删除）：
+  - 查询改写：mock LLM 返回 3 关键词 → 正确提取；含引号/逗号 → 清洗；LLM 异常 → 回退空列表
+  - 多路合并：3 路各返回相同 2 块 → 去重后 2 块，保留最高相似度分数
+  - CrossEncoder 重排：候选含"Python 是编程语言"/"Python 支持面向对象"/"香蕉是水果"，查询"Python 是什么" → 重排后 top1 为 Python 相关块（score=0.731），香蕉被排后；分数降序且在 (0,1]
+  - `build_reranker()` 返回 `LocalCrossEncoderReranker`，模型 `BAAI/bge-reranker-base` 自动下载缓存成功
+- 备注：重排分数为 sigmoid 后的 CrossEncoder 分数（非原始向量相似度），`RAG_SIM_THRESHOLD=0.30` 仍可作为低相关性过滤阈值；如需调整可单独调高
+
+**18.（新增功能）FastAPI 后端服务层（RESTful + SSE）**
+- 需求：新增 `api/` 目录，暴露 7 个 RESTful 接口（含 SSE 流式对话），复用现有 agent/rag/mcp_tools 业务层
+- 实现：
+  - `api/__init__.py` + `api/schemas.py`：Pydantic 模型（ChatRequest/ChatResponse/DocumentItem/SessionItem/ToolItem/UploadResponse）
+  - `api/server.py`：FastAPI 应用，`lifespan` 启动时构建 Agent/RAG/MCP/Memory 单例，关闭时释放 MCP 连接；CORS 全开便于前端联调
+    - `POST /api/chat`：`stream=true`（默认）返回 SSE 事件流（start/tool/answer/error/done），通过 `agent.ask(on_tool=...)` 回调把工具调用推入 `asyncio.Queue` 推送；`stream=false` 直接返回 `{session_id, answer}` JSON
+    - `POST /api/documents/upload`：`UploadFile` 写入临时目录后复用 `rag.upload()` 入库
+    - `GET /api/documents`、`DELETE /api/documents/{source}`：复用 `rag.list_sources()` / `rag.delete()`
+    - `GET /api/sessions`、`DELETE /api/sessions/{session_id}`：复用 `memory.list_sessions()` / `memory.delete_session()`
+    - `GET /api/tools`：复用 `agent._build_tools()` 返回知识库 + MCP 工具列表
+  - `requirements.txt`：新增 `fastapi>=0.115.0`、`uvicorn>=0.30.0`
+  - `README.md`：特性表新增 REST API 行、目录结构新增 `api/`、新增「启动 API 服务」章节（含接口一览表与 SSE 事件说明）、拉取者上手补充 API 启动命令
+- 验证（启动 `uvicorn api.server:app`，临时脚本 `_verify_api.py` 已删除）：
+  - 全部 7 个接口返回 200：tools（3 个工具含 knowledge_search）、documents 列表、sessions 列表、upload（1 分块）、chat 非流式（462 字回答）、chat SSE（事件序列 start→answer→done）、delete session（4 条消息）、delete document（1 分块）
+  - 注意：本机 httpx 请求 localhost 被系统代理拦截返回 502，验证脚本用 `trust_env=False` 绕过；真实前端/浏览器不受此影响
+- 备注：API 默认无鉴权，生产环境需自行增加 API Key / OAuth；会话与向量库与 CLI/Web 共用 `data/`
+
+**19.（新增）FastAPI 接口单元测试**
+- 需求：为 FastAPI 服务补充单元测试
+- 实现：
+  - `tests/conftest.py`：`mock_runtime` fixture 向 `api.server._runtime` 注入 MagicMock（rag/memory/agent/mcp），预设各方法返回值；`client` fixture 把 `app.router.lifespan_context` 替换为空操作，避免加载 embedding/cross-encoder 重型模型与连接 MCP，`TestClient` 走纯契约测试
+  - `tests/test_api.py`：15 个用例覆盖全部 7 个接口
+    - 工具：`GET /api/tools` 返回 3 个工具（含 knowledge_search）
+    - 文档：上传成功、空文件名（FastAPI 框架层返回 422）、rag 异常返回 400、列表、删除成功、删除不存在返回 404
+    - 会话：列表、删除成功、删除不存在返回 404
+    - 对话：非流式（新建会话/已有会话）、SSE 流式（start→tool→answer→done 事件序列、断言 tool 事件内容）、SSE 异常（error 事件 + done）
+  - `requirements.txt`：新增 `pytest>=8.0.0`
+- 踩坑：
+  1. `TestClient(app, lifespan="off")` 在当前 Starlette 版本不支持该参数 → 改为替换 `app.router.lifespan_context` 为空 asynccontextmanager
+  2. `rag.delete` 用普通 `MagicMock` 返回 int，但服务端 `await` 它报 `TypeError: object int can't be used in 'await' expression` → 改为 `AsyncMock`
+  3. 空文件名上传：原断言期望服务端 `if not file.filename` 返回 400，实际 FastAPI 在框架层把空文件名字段解析为字符串而非 UploadFile，返回 422 → 修正断言为 422
+- 验证：`pytest tests/ -v` → 15 passed in 0.32s
+
 ---
 
 ## 九、继续维护约定

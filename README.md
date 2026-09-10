@@ -8,12 +8,13 @@
 | ---- | ---- |
 | 📚 RAG 知识库 | 上传 PDF / TXT / MD → 递归切分（带重叠窗口）→ OpenAI Embedding 向量化 → ChromaDB 本地持久化检索 |
 | 🎚 相似度阈值过滤 | 检索结果低于 `RAG_SIM_THRESHOLD` 的块会被过滤；无合格结果时返回"知识库信息不足"，驱动 Agent 转向外部工具 |
-| 🔁 Rerank 预留 | 已预留重排序扩展接口（默认关闭），后续配置 API Key 即可开启 |
+| 🔁 Rerank 重排 | 本地 CrossEncoder（BAAI/bge-reranker-base）对向量召回候选二次精排，默认开启；查询改写（LLM 生成多关键词多路召回）提升覆盖率 |
 | 🤖 Agent 调度 | LLM 驱动意图判断与任务拆解，多轮 tool-call 循环：先查知识库，信息不足再调 MCP 工具，最后二次汇总回答 |
 | 🔌 MCP 工具 | 支持同时连接多个 MCP Server（stdio 本地进程 + SSE 远程）；内置文件读取（路径白名单防穿越）、HTTP 请求两个基础工具 |
 | 🧠 对话记忆 | SQLite 单文件持久化，多会话管理，重启不丢失 |
 | 💬 CLI 入口 | 命令式交互（含 /upload /documents /delete /sessions /new /tools）；结构上已与 web 层解耦，便于扩展 Streamlit |
 | 🖥️ Web 界面 | Streamlit 可视化界面（`streamlit run web/app.py`）：聊天 + 工具调用轨迹展示、知识库上传/删除、会话新建/切换 |
+| 🌐 REST API | FastAPI 后端（`uvicorn api.server:app`）：SSE 流式对话、文档上传/列表/删除、会话列表/删除、工具列表，启动后访问 `/docs` 查看交互式文档 |
 
 ## 项目架构
 
@@ -86,9 +87,9 @@ MyAgent/
 │   ├── splitter.py              # 递归字符切分 + 重叠窗口
 │   ├── embedder.py              # Embedding 双后端：本地模型（默认）/ OpenAI 接口
 │   ├── vectorstore.py           # ChromaDB 入库 / 检索 / 删除
-│   ├── reranker.py              # Rerank 预留接口（默认关闭）
+│   ├── reranker.py              # CrossEncoder 重排（本地 BAAI/bge-reranker-base）
 │   ├── types.py                 # 共享数据结构
-│   └── service.py               # RAGService 文档管理与检索
+│   └── service.py               # RAGService 文档管理与检索（含查询改写多路召回）
 ├── mcp_tools/
 │   ├── servers.json             # MCP Server 注册表（可增删）
 │   ├── embedded_server.py       # 内置 stdio Server（file_read / http_request）
@@ -98,6 +99,12 @@ MyAgent/
 ├── web/
 │   ├── bridge.py                # 异步桥：后台线程常驻事件循环（供 Streamlit 调用异步业务层）
 │   └── app.py                   # Streamlit Web 界面入口
+├── api/
+│   ├── schemas.py               # Pydantic 请求/响应模型
+│   └── server.py                # FastAPI 后端：RESTful + SSE 接口
+├── tests/
+│   ├── conftest.py              # 测试夹具（mock 运行时 + TestClient）
+│   └── test_api.py              # API 接口单元测试（15 用例，pytest tests/ -v）
 └── utils/
     └── logger.py                # 统一日志（全部走 stderr）
 ```
@@ -223,6 +230,51 @@ streamlit run web/app.py
 
 浏览器自动打开后：左侧管理会话与知识库（上传 / 删除文档、查看工具列表），主区域对话；Agent 每次调用的工具（知识库检索 / MCP 工具）会以"工具调用轨迹"折叠面板展示。会话与向量库同样持久化到 `data/`，与 CLI 完全共用。
 
+### 启动 API 服务
+
+```bash
+.venv\Scripts\activate
+uvicorn api.server:app --host 0.0.0.0 --port 8000 --reload
+# 未激活虚拟环境时：.venv\Scripts\python.exe -m uvicorn api.server:app --host 0.0.0.0 --port 8000 --reload
+```
+
+启动后访问 `http://127.0.0.1:8000/docs` 查看 Swagger 交互式文档。API 复用同一套业务层（agent/rag/mcp_tools），与 CLI / Web 共用 `data/` 持久化数据。
+
+#### 接口一览
+
+| 方法 | 路径 | 说明 |
+| ---- | ---- | ---- |
+| POST | `/api/chat` | 对话。`stream=true`（默认）返回 SSE 事件流；`stream=false` 直接返回最终答案 JSON |
+| POST | `/api/documents/upload` | 上传文档入库（`multipart/form-data`，字段名 `file`，支持 pdf/txt/md） |
+| GET | `/api/documents` | 列出知识库文档及分块数 |
+| DELETE | `/api/documents/{source}` | 按源文档名删除其全部分块 |
+| GET | `/api/sessions` | 列出全部历史会话 |
+| DELETE | `/api/sessions/{session_id}` | 删除指定会话及其全部消息 |
+| GET | `/api/tools` | 列出当前可用工具（知识库检索 + MCP 外部工具） |
+
+#### 对话接口（SSE 流式）
+
+请求体：
+```json
+{
+  "session_id": 3,
+  "message": "会议室怎么预订",
+  "stream": true
+}
+```
+
+`session_id` 可省略（省略时自动新建会话）。`stream=true` 时响应为 `text/event-stream`，事件类型：
+
+| type | 字段 | 说明 |
+| ---- | ---- | ---- |
+| `start` | `session_id` | 开始处理，返回会话 ID |
+| `tool` | `name`, `args`, `result` | Agent 调用的工具及返回结果 |
+| `answer` | `content` | 最终回答文本 |
+| `error` | `message` | 处理异常 |
+| `done` | — | 流结束 |
+
+`stream=false` 时直接返回 `{"session_id": 3, "answer": "..."}`。
+
 > 建议先完成 `config.py` 配置，再按 [docs/TEST_GUIDE.md](docs/TEST_GUIDE.md) 逐步测试验证。
 
 ## 安全说明
@@ -262,11 +314,11 @@ copy config.example.py config.py                     # Windows；mac/linux 用 c
 # 编辑 config.py 填入 LLM_API_KEY（及服务商 BASE_URL / MODEL）
 python main.py chat                                   # CLI 对话
 # streamlit run web/app.py                           # 或 Web 界面
+# uvicorn api.server:app --port 8000 --reload        # 或 REST API（访问 /docs）
 ```
 Embedding 默认本地模型（`bge-small-zh-v1.5`，首次运行自动下载），**无需额外配置**即可上传文档：`python main.py upload <文件>`。
 
 ## 后续扩展方向
 
-- **Web 界面**：CLI 与业务逻辑已分层解耦，可新增 `web/` 模块用 Streamlit 包装 `RAGService` 与 `Agent`
-- **Rerank 重排**：配置 API Key 后开启（`rag/reranker.py` 已有接入骨架）
 - **更多文档格式**：在 `rag/loader.py` 中追加对应解析器即可
+- **API 鉴权**：当前 API 默认无鉴权，生产环境可在 `api/server.py` 增加 API Key / OAuth 依赖

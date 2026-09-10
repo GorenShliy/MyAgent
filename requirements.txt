@@ -24,5 +24,12 @@ httpx>=0.27.0
 # Web 界面（streamlit run web/app.py）
 streamlit>=1.37.0
 
+# FastAPI 后端服务（uvicorn api.server:app --reload）
+fastapi>=0.115.0
+uvicorn>=0.30.0
+
+# 单元测试（pytest tests/ -v）
+pytest>=8.0.0
+
 # ---- 以下为可选依赖，按需启用 ----
 # tiktoken>=0.7.0                # 将文本切分改为按 token 切分时安装（见 rag/splitter.py 注释）
