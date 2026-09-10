@@ -61,7 +61,10 @@ class Agent:
             try:
                 msg = await self.llm.chat(messages, tools=tools)
             except Exception as e:
-                return f"抱歉，调用大模型失败：{type(e).__name__}: {e}"
+                error_msg = f"抱歉，调用大模型失败：{type(e).__name__}: {e}"
+                self.memory.save_message(session_id, "assistant", error_msg)
+                await self._maybe_auto_title(session_id, user_input, is_first)
+                return error_msg
 
             if not msg.tool_calls:
                 # 模型决定直接作答：保存（含工具轨迹）并返回
@@ -113,8 +116,10 @@ class Agent:
                     {"role": "tool", "tool_call_id": tc.id, "content": tool_result}
                 )
 
+        max_msg = "已达到最大迭代轮数仍未得到结论，请尝试把问题表述得更具体一些。"
+        self.memory.save_message(session_id, "assistant", max_msg)
         await self._maybe_auto_title(session_id, user_input, is_first)
-        return "已达到最大迭代轮数仍未得到结论，请尝试把问题表述得更具体一些。"
+        return max_msg
 
     # ---------------- 工具调度 ----------------
     def _build_tools(self) -> list[dict]:
@@ -181,7 +186,7 @@ class Agent:
                 [{"role": "user", "content": self._TITLE_PROMPT + question}]
             )
             title = (msg.content or "").strip().strip('"\'“”‘’')
-            if not title or len(title) > 32:
+            if not title or len(title) > 12:
                 title = "新会话"
         except Exception:
             logger.debug("会话自动命名失败（保持默认标题）", exc_info=True)

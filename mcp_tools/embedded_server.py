@@ -57,6 +57,41 @@ def _resolve_allowed(rel_or_abs: str):
     return None
 
 
+# ---------------- 敏感文件黑名单：防止 API Key / 密钥泄露 ----------------
+# 精确文件名匹配（不区分大小写）
+_SENSITIVE_FILENAMES = {
+    "config.py",
+    "config.example.py",
+    ".env",
+    ".env.local",
+    ".env.production",
+    "credentials.json",
+    "service_account.json",
+}
+# 扩展名匹配（不区分大小写）
+_SENSITIVE_SUFFIXES = (
+    ".key",
+    ".pem",
+    ".p12",
+    ".pfx",
+    ".crt",
+    ".cer",
+    ".jks",
+    ".keystore",
+    ".p8",
+    ".der",
+)
+
+
+def _is_sensitive(path: str) -> bool:
+    """按文件名 / 扩展名判断是否为敏感文件（大小写不敏感）。"""
+    name = os.path.basename(path)
+    lower_name = name.lower()
+    if lower_name in _SENSITIVE_FILENAMES:
+        return True
+    return any(lower_name.endswith(suf) for suf in _SENSITIVE_SUFFIXES)
+
+
 @mcp.tool()
 def file_read(path: str) -> str:
     """
@@ -68,6 +103,8 @@ def file_read(path: str) -> str:
         return "错误：路径不在允许访问的白名单内（仅可读取 data/documents 目录与项目工作目录中的文件）。"
     if not os.path.isfile(target):
         return f"错误：文件不存在或不是普通文件：{path}"
+    if _is_sensitive(target):
+        return f"错误：拒绝读取敏感文件（{os.path.basename(target)}），以防止 API Key 等机密信息泄露。"
     for encoding in ("utf-8", "gbk", "latin-1"):
         try:
             with open(target, "r", encoding=encoding) as f:

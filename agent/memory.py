@@ -21,8 +21,11 @@ class Memory:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        # timeout=10：写锁等待最长 10 秒，避免短暂并发时立刻抛出 database is locked
+        conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
+        # WAL 模式：允许并发读，减少写锁持有时间，降低 database is locked 概率
+        conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
     def _init_db(self):
